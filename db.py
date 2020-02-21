@@ -16,6 +16,6 @@ def acquire():
 
 async def run_query():
     async with acquire() as conn:
-        query = "select 1 from mydb.database "
+        query = "select 1  "
         result = await conn.fetch(query)
         return {"result": result}
