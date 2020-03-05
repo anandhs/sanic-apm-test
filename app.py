@@ -1,12 +1,13 @@
 from sanic import Sanic
 from sanic.response import json
 from sanic import response
-from tracers import sanic_tracing
+from tracers import sanic_opentracer
 from tracers import asyncpg_connection
 import db
 
 app = Sanic()
-sanic_tracing.init_tracer(app, {'apm_service_name': 'sanic-apm.test.anandh.local'})
+tracer = sanic_opentracer.init_tracer('sanic-apm.test.anandh.local', 'localhost', '8126')
+tracer = sanic_opentracer.SanicTracing(tracer, app)
 
 @app.listener("before_server_start")
 async def register_db(app, loop):

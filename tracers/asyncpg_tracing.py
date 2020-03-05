@@ -1,10 +1,7 @@
 # https://github.com/condorcet/asyncpg-opentracing
 from functools import wraps
-from opentracing import tags, logs
+from opentracing import global_tracer, tags, logs
 from contextlib import contextmanager
-from ddtrace import tracer
-from ddtrace.ext import SpanTypes, http
-from ddtrace.constants import ANALYTICS_SAMPLE_RATE_KEY
 
 
 def operation_name(query: str):
@@ -13,27 +10,56 @@ def operation_name(query: str):
     return "asyncpg " + query
 
 
+def parse_query(query):
+    """
+    This is only done so that DD doesn't show errors parsing the long unlock query: 
+
+    SELECT pg_advisory_unlock_all();
+    CLOSE ALL;
+
+                DO $$
+                BEGIN
+                    PERFORM * FROM pg_listening_channels() LIMIT 1;
+                    IF FOUND THEN
+                        UNLISTEN *;
+                    END IF;
+                END;
+                $$;
+            
+    RESET ALL;
+    """
+    if "pg_advisory_unlock_all" in query:
+        return "select pg_reset_lock"
+    return query
+
+
 @contextmanager
 def con_context(handler, query, query_args):
     _tags = {
         tags.DATABASE_TYPE: "SQL",
-        tags.DATABASE_STATEMENT: query,
+        tags.DATABASE_STATEMENT: parse_query(query),
         tags.DATABASE_USER: handler._params.user,
         tags.DATABASE_INSTANCE: handler._params.database,
         "db.params": query_args,
         tags.SPAN_KIND: tags.SPAN_KIND_RPC_CLIENT,
-        ANALYTICS_SAMPLE_RATE_KEY: True,
+        "span.type": "sql",
     }
-    child_span = tracer.current_span()
-    with tracer.start_span(
-        operation_name(query),
-        child_of=child_span,
-        span_type=SpanTypes.SQL,
-        resource=operation_name(query),
-        service="valuations-db",
-    ) as span:
-        span.set_tags(_tags)
-        yield
+    parent_span = global_tracer().active_span
+    with global_tracer().start_active_span(
+        operation_name=operation_name(query), tags=_tags, child_of=parent_span
+    ) as scope:
+        try:
+            yield
+        except Exception as e:
+            scope.span.log_kv(
+                {
+                    logs.EVENT: "error",
+                    logs.ERROR_KIND: type(e).__name__,
+                    logs.ERROR_OBJECT: e,
+                    logs.MESSAGE: str(e),
+                }
+            )
+            raise
 
 
 def wrap(coro):
